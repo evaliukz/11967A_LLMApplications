@@ -1,0 +1,176 @@
+# Language Models — Core Concepts
+
+## 1. What is a Language Model?
+
+A **Language Model (LM)** predicts the probability distribution of the **next token** given previous tokens:
+
+[
+P(y_t \mid y_1,\dots,y_{t-1})
+]
+
+Example:
+
+```text
+Input: ["I", "eat", "the"]
+
+P("apple")    = 0.11
+P("sandwich") = 0.095
+P("computer") = 0.00026
+```
+
+A **token** is the basic unit processed by the model. It can be a **word, subword, or character**.
+
+---
+
+## 2. Sequence Likelihood
+
+The probability of an entire sequence is calculated using the **chain rule**:
+
+[
+P(Y)=\prod_{t=1}^{T}P(y_t\mid y_{1:t-1})
+]
+
+Example:
+
+[
+P(I,eat,the,apple)
+]
+
+[
+=P(I)\times P(eat|I)\times P(the|I,eat)\times P(apple|I,eat,the)
+]
+
+**Key idea:** sequence probability = product of each next-token probability.
+
+---
+
+## 3. Statistical N-Gram Models
+
+Traditional language models estimate probabilities by **counting occurrences in a corpus**.
+
+An **n-gram** considers only the previous (n-1) tokens.
+
+Examples:
+
+* Bigram → previous **1** token
+* Trigram → previous **2** tokens
+* n-gram → previous **n−1** tokens
+
+Example:
+
+[
+P(apple\mid eat,the)
+]
+
+### Two Major Problems
+
+1. **Parameter explosion:** possible n-grams grow exponentially as (n) increases.
+2. **Data sparsity:** unseen sequences receive probability 0.
+
+---
+
+## 4. Neural Language Models
+
+Neural LMs replace the huge **n-gram lookup table** with a **neural network**:
+
+[
+\text{previous tokens} \rightarrow NN \rightarrow P(\text{next token})
+]
+
+Advantages:
+
+* Can model long histories without exponential parameter growth.
+* Continuous representations allow **generalization to unseen sequences**.
+
+Modern LLMs are neural language models.
+
+---
+
+## 5. LM ≠ Text Generation
+
+A language model itself fundamentally outputs:
+
+[
+P(\text{next token}\mid\text{context})
+]
+
+To generate text, we **sample/select a token from this distribution**, append it to the sequence, and repeat.
+
+> **LM predicts probabilities; a generation procedure uses those probabilities to generate text.**
+
+---
+
+# Conditioned vs. Unconditioned LM
+
+## Unconditioned LM
+
+Only uses previously generated tokens:
+
+[
+P(y_t\mid y_{1:t-1})
+]
+
+Therefore:
+
+[
+P(Y)=\prod_tP(y_t\mid y_{1:t-1})
+]
+
+**Past tokens → next token**
+
+Examples: GPT-style / LLaMA models.
+
+---
+
+## Conditioned LM
+
+Uses an additional input sequence (X):
+
+[
+P(y_t\mid y_{1:t-1},X)
+]
+
+Therefore:
+
+[
+P(Y\mid X)=\prod_tP(y_t\mid y_{1:t-1},X)
+]
+
+**Input (X) + past output tokens → next output token**
+
+Examples: T5, machine translation, **Seq2Seq**.
+
+---
+
+## Encoder–Decoder Architecture
+
+A common architecture for conditioned LMs:
+
+```text
+Input X
+   ↓
+Encoder
+   ↓
+Context Representation
+   ↓
+Decoder + previous y tokens
+   ↓
+Next Token y_t
+```
+
+* **Encoder:** processes input sequence (X).
+* **Decoder:** uses (X) and previous outputs (y_{1:t-1}) to predict (y_t).
+
+---
+
+## Notation to Remember
+
+* (X) = **input sequence**
+* (Y) = **target/output sequence**
+* (y_t) = target token at step (t)
+* (\theta) = learned neural-network parameters
+* Different papers may swap (X) and (Y), so focus on **input vs. target**, not the letter.
+
+### One-Line Summary
+
+> **LM = next-token probability model. N-grams estimate probabilities by counting; neural LMs learn them with neural networks. Unconditioned LMs use previous tokens only, while conditioned LMs additionally use an input sequence (X).**
