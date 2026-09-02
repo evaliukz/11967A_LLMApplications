@@ -1085,3 +1085,356 @@ Weight tying 就是一个非常漂亮的例子。
 
 Press, O., & Wolf, L. (2017). *Using the Output Embedding to Improve
 Language Models*. Proceedings of EACL 2017, pp. 157--163.
+
+
+
+# Weight Tying：Gradient 与参数更新机制
+
+## 1. 核心结论
+
+> **Weight Tying 不是"使用 Attention 更新后的 weight"。**
+
+Input Embedding 和 Output Projection / LM Head 从头到尾共享同一个
+parameter matrix `E`。
+
+在一次 training step 的 forward pass 中，`E` 会被使用多次，但 Attention
+不会直接修改 `E`。参数真正发生更新是在 `optimizer.step()`。
+
+## 2. 一次 Training Step
+
+假设：
+
+``` text
+Input:  "I love"
+Target: "cats"
+```
+
+### Step 1：Input Embedding 使用 E
+
+``` text
+"love"
+   ↓
+E["love"]
+   ↓
+embedding
+   ↓
+Attention / FFN / Transformer
+   ↓
+hidden state h
+```
+
+此时 `E` 没有被修改。Forward pass 中 parameters are **used, not
+updated**。
+
+### Step 2：Output Projection 再次使用同一个 E
+
+Weight Tying 规定：
+
+``` text
+W_output = E
+```
+
+因此：
+
+``` text
+h
+↓
+h @ E.T
+↓
+logits
+↓
+softmax
+↓
+P(next token)
+```
+
+同一个 `E` 在一次 forward 中承担两个角色：
+
+``` text
+E[token] → Input Embedding
+h @ E.T  → Output Projection / LM Head
+```
+
+## 3. Forward 时 E 不会更新
+
+错误理解：
+
+``` text
+Input 使用 E_old
+↓
+Attention
+↓
+Attention 把 E 更新成 E_new
+↓
+Output 使用 E_new
+```
+
+**不是这样。**
+
+正确理解：
+
+``` text
+              E_current
+              /       \
+             /         \
+Input Embedding       Output Projection
+      ↓                     ↑
+Transformer ─────────→ hidden state
+```
+
+整个 forward pass 使用同一个当前版本的 `E`。
+
+## 4. Backpropagation
+
+计算 loss 后：
+
+``` python
+loss.backward()
+```
+
+因为 `E` 在 forward 中存在两条计算路径，所以会收到两部分 gradient：
+
+``` text
+gradient(E)
+=
+gradient_from_input
++
+gradient_from_output
+```
+
+PyTorch 会把它们累积到：
+
+``` python
+E.grad
+```
+
+直觉图：
+
+``` text
+                     Loss
+                   ↙      ↘
+          Output Path    Transformer
+               ↓             ↓
+        gradient_output  gradient_input
+                   ↘      ↙
+                       E
+```
+
+## 5. optimizer.step() 才真正更新 E
+
+`loss.backward()` 只是计算 gradient，参数本身还没改变。
+
+真正修改 parameter：
+
+``` python
+optimizer.step()
+```
+
+简单理解：
+
+``` text
+E_new
+=
+E_old - learning_rate × gradient(E)
+```
+
+而：
+
+``` text
+gradient(E)
+=
+gradient_input + gradient_output
+```
+
+所以：
+
+``` text
+E_new
+=
+E_old
+-
+lr × (gradient_input + gradient_output)
+```
+
+下一次 training step 才开始使用 `E_new`。
+
+## 6. 为什么说 Shared Embedding 获得两边的 Training Signal？
+
+``` text
+E
+├── Input Embedding role
+│        ↓
+│   gradient_input
+│
+└── Output Projection role
+         ↓
+    gradient_output
+```
+
+最终：
+
+``` text
+E.grad
+=
+gradient_input
++
+gradient_output
+```
+
+因此同一个 embedding 同时学习：
+
+``` text
+How should this token be represented as an input?
+
++
+
+What representation should correspond to predicting this token?
+```
+
+这就是：
+
+> **The shared embedding receives training signals from both the input
+> and output roles.**
+
+## 7. 类比
+
+把 `E` 想象成一个人，同时做两份工作：
+
+``` text
+Job A: Input Embedding
+Job B: Output Projection
+```
+
+两个老板分别给 feedback：
+
+``` text
+Boss A → gradient_input
+Boss B → gradient_output
+```
+
+总 feedback：
+
+``` text
+gradient_total
+=
+gradient_input + gradient_output
+```
+
+然后：
+
+``` text
+E_old
+↓
+optimizer.step()
+↓
+E_new
+```
+
+第二天两份工作都使用新的 `E`。
+
+不是第一份工作结束后立刻更新，再让第二份工作使用新版本。
+
+## 8. PyTorch Training Loop 必记顺序
+
+``` text
+① Forward
+   Parameters are USED, not modified
+        ↓
+② Calculate Loss
+        ↓
+③ loss.backward()
+   Calculate / accumulate gradients
+   Parameters still NOT modified
+        ↓
+④ optimizer.step()
+   Actually UPDATE parameters
+        ↓
+⑤ Next Training Step
+   Use updated parameters
+```
+
+对应代码：
+
+``` python
+optimizer.zero_grad()
+
+logits = model(x)       # Forward
+loss = criterion(logits, target)
+
+loss.backward()         # Calculate gradients
+optimizer.step()        # Update parameters
+```
+
+## 9. Weight Tying 完整流程
+
+``` text
+                     Shared E
+                    /        \
+                   /          \
+        Input Embedding       |
+              ↓               |
+         Transformer          |
+              ↓               |
+        Hidden State          |
+              ↓               |
+        Output Projection ←───┘
+              ↓
+            Loss
+              ↓
+           backward
+              ↓
+      ┌───────┴────────┐
+      ↓                ↓
+gradient_input   gradient_output
+      └───────┬────────┘
+              ↓
+            E.grad
+              ↓
+       optimizer.step()
+              ↓
+            E_new
+```
+
+## 10. 面试 / 考试总结
+
+> **In weight tying, the input embedding and output projection share the
+> same parameter matrix. During forward propagation the shared weights
+> are only used, not updated. During backpropagation, gradients from
+> both the input and output computational paths accumulate on the shared
+> parameter, and `optimizer.step()` updates it once for the next
+> training step.**
+
+## 11. 最短记忆版
+
+``` text
+Weight Tying
+=
+Input Embedding Weight
+=
+Output LM Head Weight
+```
+
+训练：
+
+``` text
+Forward
+↓
+同一个 E 用两次
+↓
+Loss
+↓
+Backward
+↓
+input gradient + output gradient
+↓
+E.grad
+↓
+optimizer.step()
+↓
+E 更新一次
+↓
+Next Step
+```
+
+> **Attention 不负责更新 embedding weight；真正更新参数的是
+> optimizer.step()。**
