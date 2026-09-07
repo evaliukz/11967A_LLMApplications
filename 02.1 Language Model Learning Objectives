@@ -684,27 +684,797 @@ Post-Training
 
 ---
 
-# 18. 面试速答
+# Review: Pre-Training Encoder-Decoder vs Decoder-Only Models
 
-### What is pre-training?
+## 1. 核心问题：Pre-training objective 决定模型“通过什么任务学习”
 
-> **Pre-training is the first large-scale training stage where a model learns broad language, knowledge, and other patterns from massive datasets using objectives such as next-token prediction or denoising.**
+设计 pre-training objective 的目的，是让训练任务迫使模型把我们希望它掌握的信息编码进 weights，例如：
 
-### What is post-training?
+```text
+English grammar
+syntax / semantics
+factual knowledge
+world knowledge
+programming patterns
+```
 
-> **Post-training further trains a pretrained base model on smaller, higher-quality or preference-oriented data to improve instruction following, helpfulness, alignment, safety, or task-specific behavior.**
+最重要的区分：
 
-### Why can next-token prediction learn useful representations?
+```text
+Architecture = 模型结构
+Objective    = 用什么任务训练这个模型
+```
 
-> **Although the objective is simple, accurately predicting the next token across diverse data requires the model to capture grammar, semantics, world knowledge, context, and recurring reasoning and programming patterns.**
+两者相关，但不是同一件事。
 
-### What is span corruption?
+---
 
-> **Span corruption removes spans from the input and asks an encoder-decoder model to reconstruct the missing text. The encoder processes the corrupted context, while the decoder autoregressively generates the missing spans.**
+## 2. Encoder-Decoder Model 的 Pre-Training
 
-### Prefix Prediction vs Span Corruption?
+Encoder-Decoder architecture：
 
-> **Prefix prediction encodes the beginning of a sequence and generates its continuation, while span corruption removes pieces throughout the sequence and reconstructs them using surrounding context.**
+```text
+Input
+  ↓
+Encoder
+  ↓
+Encoder representations
+  ↓
+Decoder
+  ↓
+Target sequence
+```
+
+它天然适合：**给定一个 input sequence，生成另一个 target sequence。**
+
+课程回顾了两个 objective： Prefix → Suffix， Masked / Span Language Modeling
+
+## 3. Decoder-Only Model 有什么不同？
+
+Decoder-only architecture 没有单独的 Encoder：
+
+```text
+Tokens
+  ↓
+Causal Decoder Block
+  ↓
+Causal Decoder Block
+  ↓
+...
+  ↓
+Vocabulary logits
+```
+
+你前面实现的：
+
+```python
+DecoderLM
+```
+
+就是这种 architecture。
+
+它的重要特点是：每个 position 只能看到自己以及之前的 tokens，不能看到未来 tokens。
+
+这是通过 causal mask 实现的。
+
+---
+
+## 4. Decoder-Only 的 Full Language Modeling Objective
+
+课程强调的最大区别是：
+
+> **Decoder-only model 可以直接对整个 sequence 做 full language modeling。**
+
+例如完整训练文本：
+
+```text
+I took my dog, Fido, to the park for his walk.
+```
+
+不需要先人工切成：
+
+```text
+Encoder prefix
++
+Decoder suffix
+```
+
+而是整条 sequence 作为 causal language modeling sequence。
+
+---
+
+## 5. Full Language Modeling 到底发生了什么？
+
+假设 sequence：
+
+```text
+I like cats
+```
+
+训练目标可以理解成：
+
+```text
+I→ predict "like"
+
+I like→ predict "cats"
+```
+
+更一般地：
+
+$$
+P(x_1,x_2,\ldots,x_T)=
+\prod_{t=1}^{T}
+P(x_t\mid x_{<t})
+$$
+
+Loss：
+
+$$
+\mathcal{L}=
+-\sum_t
+\log P(x_t\mid x_{<t})
+$$
+
+这就是：
+
+> **Causal / Autoregressive Language Modeling**
+
+---
+
+## 6. 为什么叫 “Full Language Modeling”？
+
+Encoder-Decoder 的 prefix → suffix：
+
+```text
+Prefix:
+I took my dog, Fido, to the
+
+Target:
+park for his walk.
+```
+
+训练重点是：
+
+$$
+P(\text{suffix}\mid\text{prefix})
+$$
+
+而 Decoder-only full LM：
+
+```text
+I took my dog, Fido, to the park for his walk.
+```
+
+整个 sequence 都参与 autoregressive prediction。
+
+概念上：
+
+```text
+I→ took
+
+I took→ my
+
+I took my→ dog
+
+I took my dog→ Fido
+
+...
+
+I took ... the→ park
+```
+
+所以叫： **Full Language Modeling Objective**
+
+---
+
+# 7. 一个非常小的例子
+
+Sequence：
+
+```text
+I love pizza
+```
+
+token IDs 假设：
+
+```text
+I     = 1
+love  = 2
+pizza = 3
+```
+
+模型输入：
+
+```text
+[1,2,3]
+```
+
+训练时可以把 prediction 对齐理解成：
+
+```text
+Input position      Target next token
+
+I                   love
+love                pizza
+```
+
+也就是：
+
+```text
+Input:
+I     love
+
+Target:
+love  pizza
+```
+
+因此常说：target 是 input 向左 shift 一位后的 next tokens。
+
+---
+
+## 8. 为什么不会“偷看答案”？
+
+训练时虽然整个 sequence：
+
+```text
+I love pizza
+```
+
+一起进入 GPU，但 causal mask 保证：
+
+```text
+"I" position
+只能看 I
+
+"love" position
+只能看 I, love
+
+"pizza" position
+只能看 I, love, pizza
+```
+
+不能：
+
+```text
+I → 偷看 pizza
+```
+
+因此可以 parallel 地训练所有 positions，同时保持 autoregressive constraint。
+
+这就是你前面实现 `self_attention()` 时 causal mask 的真正用途之一。
+
+---
+
+## 9. 和你实现的 DecoderLM 串起来
+
+你前面的：
+
+```python
+DecoderLM.forward()
+```
+
+做：
+
+```text
+input_ids
+[B,S]
+
+↓ Embedding
+
+[B,S,D]
+
+↓ Decoder Blocks
+
+[B,S,D]
+
+↓ Final LayerNorm
+
+[B,S,D]
+
+↓ Vocabulary Projection
+
+[B,S,V]
+```
+
+例如：
+
+```text
+Input:
+"I love pizza"
+
+↓
+
+logits at "I"
+→ next-token distribution for "love"
+
+logits at "love"
+→ next-token distribution for "pizza"
+```
+
+然后用正确 next token 计算 cross-entropy loss。
+
+所以： 你之前写的 `DecoderLM` 正是在提供 full causal language modeling 所需要的 `[B,S,V]` logits。
+
+---
+
+## 10. Encoder-Decoder vs Decoder-Only
+
+最重要的比较：
+
+| | Encoder-Decoder | Decoder-Only |
+|---|---|---|
+| Architecture | Encoder + Decoder | Decoder only |
+| Input processing | Encoder processes source | Decoder processes causal sequence |
+| Generation | Decoder generates target | Decoder predicts next tokens |
+| 常见 objective | Prefix→Suffix、Span Corruption | Full / Causal Language Modeling |
+| 条件概率 | $P(y\mid x)$ | $P(x_t\mid x_{<t})$ |
+
+---
+
+# 11. 不要把这个区别理解得过于绝对
+
+课程这里强调的是一种典型 design distinction：
+
+```text
+Encoder-Decoder→ naturally framed as input → target
+
+Decoder-only→ naturally supports full causal LM
+```
+
+但 architecture 和 objective 是两个独立的 design choices。
+
+研究中可以设计不同组合。
+
+所以更准确的心智模型是：**某些 objectives 与某些 architectures 更自然匹配，而不是只有唯一组合。**
+
+---
+
+# 12. Mixing and Matching Design Decisions
+
+课程接下来最重要的观点是： **训练一个语言模型不是只做一个决定，而是一系列 design decisions。**
+
+论文 *What Language Model Architecture and Pretraining Objective Work Best for Zero-Shot Generalization?* 展示了这个 design space。
+
+可以简化成：
+
+```text
+Architecture
+     ↓
+Pre-Training Objective
+     ↓
+Adaptation Objective
+     ↓
+Fine-Tuning / Post-Training
+     ↓
+Evaluation
+```
+
+每一步都会影响最终模型具有什么能力。
+
+---
+
+# 13. Design Decision 1：Architecture Choice
+
+首先决定： 模型的结构是什么？
+
+例如：
+
+```text
+Encoder-only
+
+Encoder-Decoder
+
+Decoder-only
+```
+
+不同 architecture 对 information flow 有不同 inductive bias。
+
+例如：
+
+```text
+Encoder-Decoder
+→ source input + generated target
+
+Decoder-only
+→ causal next-token generation
+```
+
+---
+
+## 14. Design Decision 2：Pre-Training Objective
+
+接下来决定： Base model 最初通过什么任务学习？
+
+例如：
+
+```text
+Full Language Modeling
+
+Prefix → Suffix
+
+Span Corruption
+```
+
+Objective 会影响模型在 pre-training 阶段被鼓励学习什么能力。
+
+---
+
+## 15. Design Decision 3：Adaptation Objective
+
+课程提到：
+
+> **Adaptation Objective = 在训练过程中切换或加入新的 objective。**
+
+也就是说训练不一定是：
+
+```text
+Objective A
+↓
+一直训练到结束
+```
+
+也可能：
+
+```text
+Stage 1
+Objective A
+
+↓
+
+Stage 2
+Objective B
+
+↓
+
+Stage 3
+Another training objective
+```
+
+目的可能是：
+
+> 增加模型在不同任务、输入输出格式或使用场景中的 flexibility。
+
+---
+
+## 16. Design Decision 4：Fine-Tuning / Post-Training
+
+Pre-training 之后，还可以针对 downstream tasks 继续训练。
+
+例如 T5 展示的 text-to-text framework 可以 fine-tune 到许多任务：
+
+```text
+Question Answering
+
+Summarization
+
+Translation
+
+Classification
+
+Reasoning-related tasks
+```
+
+核心思想：
+
+```text
+General pretrained model
+        ↓
+task-specific / downstream training
+        ↓
+model adapted to desired task
+```
+
+---
+
+## 17. Training 不一定只有“两阶段”
+
+我们常说：
+
+```text
+Pre-Training
+↓
+Post-Training
+```
+
+这是很有用的高层抽象。
+
+但实际 training pipeline 可以是：
+
+```text
+Stage 1
+Large-scale Pre-Training
+
+↓
+
+Stage 2
+Adaptation
+
+↓
+
+Stage 3
+Supervised Fine-Tuning
+
+↓
+
+Stage 4
+Preference / Alignment Training
+
+↓
+
+Stage 5
+Task-Specific Fine-Tuning
+```
+
+具体模型的 stages 不一定完全一样。
+
+所以：
+
+> **Pre-training / post-training 是高层分类，实际模型训练可以包含多个连续阶段。**
+
+---
+
+## 18. 为什么 Training Stage 的顺序很重要？
+
+假设我们最终希望模型：
+
+```text
+懂语言
+懂知识
+能生成
+会回答问题
+遵循 instruction
+```
+
+比较合理的顺序通常是先建立 broad capabilities：
+
+```text
+Massive Pre-Training
+↓
+Broad language / knowledge representations
+```
+
+然后再：
+
+```text
+Fine-Tuning / Post-Training
+↓
+Shape specific behavior
+```
+
+直觉上类似：
+
+```text
+先学基础知识
+↓
+再学如何完成具体任务
+```
+
+因此课程强调：
+
+> **The key is sequencing training stages so the model develops the intended capabilities.**
+
+---
+
+## 19. Design Decision 5：Evaluation
+
+训练完成并不意味着模型一定达到目标。
+
+还需要： **Evaluation**
+
+也就是：
+
+```text
+How do we know
+the model is actually good
+at what we want it to do?
+```
+
+例如根据目标评估：
+
+```text
+Language modeling perplexity
+
+Question answering accuracy
+
+Reasoning benchmarks
+
+Code benchmarks
+
+Instruction-following evaluations
+
+Safety evaluations
+```
+
+所以 evaluation 必须和：
+
+```text
+intended capability
+```
+
+匹配。
+
+---
+
+## 20. 整个 Language Model Design Space
+
+可以把这节课总结成：
+
+```text
+                    MODEL DESIGN
+                         │
+                         ↓
+              Architecture Choice
+                         │
+        ┌────────────────┴────────────────┐
+        │                                 │
+ Encoder-Decoder                     Decoder-Only
+        │                                 │
+        ↓                                 ↓
+Pre-Training Objective           Pre-Training Objective
+        │                                 │
+Prefix → Suffix                   Full Language Modeling
+Span Corruption                   Next-Token Prediction
+        │                                 │
+        └────────────────┬────────────────┘
+                         ↓
+                Adaptation Objective
+                         ↓
+              Fine-Tuning / Post-Training
+                         ↓
+                     Evaluation
+```
+
+这不是说每个模型都必须严格走这一条路线，而是在展示： **训练模型是 architecture、objective、training stages 和 evaluation 的组合设计问题。**
+
+---
+
+## 21. Architecture、Objective、Training Stage、Evaluation 的区别
+
+这四个概念特别容易混。
+
+## Architecture
+
+回答： **模型长什么样？**
+
+```text
+Encoder-Decoder
+Decoder-only
+```
+
+---
+
+## Objective
+
+回答： **这一阶段让模型做什么任务？**
+
+```text
+Next-token prediction
+Prefix → Suffix
+Span Corruption
+```
+
+---
+
+## Training Stage
+
+回答： **现在处于整个训练 pipeline 的哪个阶段？**
+
+```text
+Pre-training
+Adaptation
+Fine-tuning
+Post-training
+```
+
+---
+
+## Evaluation
+
+回答： **怎么知道最终模型是否获得了我们想要的能力？**
+
+```text
+benchmarks
+accuracy
+perplexity
+human evaluation
+task-specific metrics
+```
+
+---
+
+# 22. 最重要的 Mental Model
+
+不要只记：
+
+```text
+Decoder-only = next-token prediction
+```
+
+更应该记：
+
+```text
+Architecture
+        ↓
+决定 information flow
+
+Objective
+        ↓
+决定模型被要求解决什么 training task
+
+Training stages
+        ↓
+逐步塑造模型能力
+
+Evaluation
+        ↓
+验证这些能力是否真的出现
+```
+
+---
+
+## 23. 面试：Encoder-Decoder vs Decoder-Only Pre-Training
+
+可以回答：
+
+> **Encoder-decoder models are naturally trained on conditional generation objectives such as prefix-to-suffix prediction or span corruption, while decoder-only models are naturally suited to full causal language modeling, where each token is predicted from previous tokens.**
+
+---
+
+## 24. 面试：What is full language modeling?
+
+> **Full language modeling factorizes the probability of an entire sequence autoregressively, predicting each token from all previous tokens.**
+
+数学上：
+
+$$
+P(x_1,\ldots,x_T)=
+\prod_t P(x_t\mid x_{<t})
+$$
+
+---
+
+## 25. 面试：Why is causal masking necessary?
+
+> **Causal masking prevents each position from attending to future tokens, so the model can train all positions in parallel without leaking the answers to next-token prediction.**
+
+---
+
+## 26. 面试：Can language model training have more than two stages?
+
+> **Yes. Pre-training and post-training are useful high-level categories, but practical training pipelines can contain multiple stages with different objectives, such as pre-training, adaptation, supervised fine-tuning, preference optimization, and task-specific fine-tuning.**
+
+---
+
+# 27. 一句话总结
+
+> **Language-model development is a sequence of design decisions: choose an architecture, choose a pre-training objective, optionally adapt the objective, fine-tune or post-train for desired downstream behavior, and evaluate whether the intended capabilities were actually learned.**
+
+对于这节课最重要的 architecture/objective 对比：
+
+```text
+Encoder-Decoder
++
+Prefix → Suffix / Span Corruption
+
+vs.
+
+Decoder-Only
++
+Full Causal Language Modeling
+```
+
+而 Decoder-only full LM 的核心公式就是：
+
+$$
+\boxed{
+P(x_1,\ldots,x_T)
+=
+\prod_t
+P(x_t\mid x_{<t})
+}
+$$
+
+
 
 # 19. 一句话总结
 
