@@ -1,0 +1,711 @@
+# Language Model Learning Objectives：Pre-Training、Post-Training 与 Encoder-Decoder
+
+## 1. 这部分到底在讲什么？
+
+核心问题是： **我们希望 Language Model 在 training 时学到什么，以及怎样把这个目标变成可以计算 loss 的任务？**
+
+整体框架：
+
+```text
+Pre-Training
+    ↓
+学习广泛的语言、知识、代码等能力
+    ↓
+Base Model
+    ↓
+Post-Training
+    ↓
+让模型更会遵循指令、更 helpful / safe / aligned
+```
+
+---
+
+## 2. Learning Objective 为什么重要？
+
+我们不能只告诉神经网络：
+
+```text
+“请理解英语、世界知识和 Python。”
+```
+
+必须给它一个能够计算误差的任务，例如：
+
+```text
+Input:  I love my
+Target: cat
+```
+
+模型预测 vocabulary probability，然后与正确 token 比较，计算 loss，再 backpropagation。
+
+因此： **Learning objective 把抽象的“希望模型学会什么”转换成可以数学优化的任务。**
+
+---
+
+# 3. Pre-Training：第一阶段训练
+
+`pre-training` 并不是“正式 training 之前”。
+
+它本身就是第一阶段的大规模训练：
+
+```text
+大量 broad / relatively unstructured data
+↓
+一个 scalable learning objective
+↓
+训练大量 parameters
+↓
+Base Model
+```
+
+数据可能来自：
+
+```text
+web pages
+books
+articles
+Wikipedia
+code repositories
+GitHub code
+...
+```
+
+## 希望学到什么？
+
+### Natural language structure
+
+包括：
+
+```text
+grammar
+syntax
+semantics
+context
+word relationships
+```
+
+例如模型逐渐学习：
+
+```text
+cat ↔ kitten
+dog ↔ puppy
+```
+
+### World knowledge
+
+训练文本中包含大量人类知识和规律，因此模型为了做好预测，会学习许多事实、概念关系和模式。
+
+### Code
+
+如果训练集包含大量代码，模型也可能学习：
+
+```text
+Python syntax
+functions
+APIs
+programming patterns
+code semantics
+```
+
+---
+
+# 4. 最经典的 Objective：Next-Token Prediction
+
+例如：
+
+```text
+The cat sat on the
+```
+
+预测：
+
+```text
+mat
+```
+
+数学上：
+
+$$
+P(x_{t+1} \mid x_1,\ldots,x_t)
+$$
+
+整个 sequence：
+
+$$
+P(x_1,\ldots,x_T)=
+\prod_{t=1}^{T}
+P(x_t \mid x_{<t})
+$$
+
+训练通常最小化 token-level negative log-likelihood / cross-entropy：
+
+$$
+\mathcal{L}=
+-\sum_t \log P(x_t \mid x_{<t})
+$$
+
+---
+
+# 5. 为什么简单的 Next-Token Prediction 能学这么多？
+
+因为要把预测做得好，模型必须利用很多结构。
+
+### World knowledge
+
+```text
+The capital of France is ___
+```
+
+要预测：
+
+```text
+Paris
+```
+
+### Grammar
+
+```text
+The cats ___ sleeping.
+```
+
+要预测：
+
+```text
+are
+```
+
+### Programming
+
+```python
+def square(x):
+    return ...
+```
+
+需要掌握 programming patterns 才能给出合理 continuation。
+
+因此：
+
+> **Objective 很简单，但在海量、多样的数据上把这个 objective 做好，会迫使模型学习丰富的 representations。**
+
+可以记：
+
+```text
+Simple objective
++
+Massive diverse data
++
+Large model capacity
+=
+Rich learned representations
+```
+
+---
+
+# 6. Post-Training：第二阶段训练
+
+Pre-training 后得到：Base Model
+`
+但“很会继续文本”并不自动等于：
+
+```text
+会回答用户问题
+会遵循 instruction
+会按照期望的行为方式工作
+```
+
+所以还需要 Post-Training。
+
+Post-training 往往使用：
+
+```text
+smaller
+higher-quality
+curated / specialized data
+preference signals
+```
+
+目标可能包括：
+
+```text
+instruction following
+helpfulness
+alignment
+safety
+task specialization
+```
+
+现代 post-training 可以包含 supervised fine-tuning、preference optimization、reinforcement-learning-related methods等；具体方法因模型而异。
+
+---
+
+# 7. Pre-Training vs Post-Training
+
+| | Pre-Training | Post-Training |
+|---|---|---|
+| 阶段 | 第一阶段 | 第二阶段 |
+| 数据 | massive / broad | 相对更小、更精选 |
+| 主要目标 | broad capabilities | desired behavior |
+| 学习内容 | language、knowledge、code 等 | instruction following、helpfulness、alignment、safety 等 |
+| 典型结果 | Base Model | 更适合实际用途的模型 |
+
+方便记忆：
+
+```text
+Pre-training = Learn broad capabilities
+
+Post-training = Shape model behavior
+```
+
+---
+
+# 8. Encoder-Decoder 的 Pre-Training Objective
+
+对于 Encoder-Decoder architecture，课程介绍两个常见思路：
+
+```text
+1. Prefix → Suffix
+
+2. Corrupted Text → Missing Spans
+```
+
+---
+
+# 9. Objective 1：Predict a Suffix Given a Prefix
+
+原始：
+
+```text
+I took my dog, Fido, to the park for his walk.
+```
+
+切成：
+
+```text
+Encoder Input:
+I took my dog, Fido, to the
+
+Decoder Target:
+park for his walk.
+```
+
+Encoder：
+
+$$
+H_{enc}=Encoder(prefix)
+$$
+
+Decoder autoregressively 预测 suffix：
+
+```text
+park
+↓
+for
+↓
+his
+↓
+walk
+↓
+.
+```
+
+数学上：
+
+$$
+P(suffix \mid prefix)=
+\prod_t P(y_t \mid y_{<t}, prefix)
+$$
+
+### 小例子
+
+```text
+Original:
+I love eating pizza
+
+Encoder:
+I love
+
+Decoder target:
+eating pizza
+```
+
+过程：
+
+```text
+"I love"
+↓ Encoder
+context
+
+context
+→ predict "eating"
+
+context + "eating"
+→ predict "pizza"
+```
+
+模型学习：
+
+> **Given this prefix, what continuation is likely?**
+
+---
+
+# 10. Objective 2：Masked Span Prediction / Span Corruption
+
+原句：
+
+```text
+I took my dog, Fido, to the park for his walk.
+```
+
+随机删除 spans：
+
+```text
+my dog, Fido
+the park for
+```
+
+Encoder input：
+
+```text
+I took <x> to <y> his walk.
+```
+
+Target：
+
+```text
+<x>: my dog, Fido
+<y>: the park for
+```
+
+模型需要根据剩余 context 恢复 missing spans。
+
+### 更小的例子
+
+原句：
+
+```text
+The little cat sleeps on the sofa.
+```
+
+变成：
+
+```text
+Encoder Input:
+The <x> sleeps on <y>.
+```
+
+Target：
+
+```text
+<x>: little cat
+<y>: the sofa
+```
+
+这要求模型使用：grammar + semantics + context来恢复缺失内容。
+
+---
+
+# 11. T5 和 Span Corruption
+
+T5 是著名的 Encoder-Decoder Transformer。
+
+它的 pre-training 使用 span-corruption / denoising 风格 objective，大致是：
+
+```text
+Original text
+↓
+Randomly remove spans
+↓
+Replace them with special sentinel tokens
+↓
+Encoder reads corrupted text
+↓
+Decoder generates removed spans
+```
+
+这很适合 Encoder-Decoder 的：
+
+```text
+input text → output text
+```
+
+结构。
+
+---
+
+# 12. Prefix Prediction vs Span Corruption
+
+### Prefix → Suffix
+
+```text
+Original:
+A B C D E F
+
+Encoder:
+A B C
+
+Decoder:
+D E F
+```
+
+主要学习：根据 prefix 继续生成。
+
+### Span Corruption
+
+```text
+Original:
+A B C D E F
+
+Input:
+A <x> D <y>
+
+Target:
+<x> = B C
+<y> = E F
+```
+
+主要学习：根据保留下来的 surrounding context 恢复 missing information。
+
+Span corruption 的 encoder 可以利用 missing span 两侧的信息，因此特别适合：
+
+```text
+bidirectional encoder understanding
++
+autoregressive decoder generation
+```
+
+---
+
+# 13. 为什么两个 Objective 可以使用同样的 Loss？
+
+这是这节很重要的概念：
+
+> **Objective / task construction 和 Loss Function 不是同一个东西。**
+
+Prefix objective：
+
+```text
+Input  = Prefix
+Target = Suffix
+```
+
+Span corruption：
+
+```text
+Input  = Corrupted Text
+Target = Missing Spans
+```
+
+虽然 input/target 构造不同，但 Decoder 最后都在预测：
+
+$$
+P(y_t \mid y_{<t},x)
+$$
+
+因此都可以使用：
+
+$$
+\mathcal{L} =
+-\sum_{t=1}^{T}
+\log P(y_t \mid y_{<t},x)
+$$
+
+其中：
+
+```text
+x = encoder input
+y = decoder target
+```
+
+区别只是 `x` 和 `y` 是怎样构造出来的。
+
+---
+
+# 14. 统一数学框架
+
+Encoder：
+
+$$
+H=Encoder(x)
+$$
+
+Decoder：
+
+$$
+P(y_t \mid y_{<t},H)
+$$
+
+Loss：
+
+$$
+\mathcal{L} =
+-\sum_{t=1}^{T}
+\log P(y_t \mid y_{<t},H)
+$$
+
+### Prefix Objective
+
+$$
+x=prefix
+$$
+
+$$
+y=suffix
+$$
+
+### Span Corruption
+
+$$
+x=corrupted\ text
+$$
+
+$$
+y=missing\ spans
+$$
+
+所以：
+
+> **Input-target framing 不同，但 token prediction loss 可以相同。**
+
+---
+
+# 15. 和你刚实现的 DecoderLM 有什么关系？
+
+你之前实现的是：DecoderLM
+
+也就是 **Decoder-only Language Model**
+
+它最自然的 pre-training objective 是 causal next-token prediction：
+
+```text
+I→ predict love
+
+I love→ predict cats
+
+I love cats→ predict ...
+```
+
+而这里讲的模型是：
+
+```text
+Encoder + Decoder
+```
+
+所以可以构造：
+
+```text
+Prefix → Suffix
+```
+
+或：
+
+```text
+Corrupted Text → Missing Spans
+```
+
+这样的 conditional generation task。
+
+---
+
+# 16. Architecture、Objective、Loss 不要混淆
+
+这是非常重要的三个概念。
+
+## Architecture
+
+回答：**模型长什么样？**
+
+例如：
+
+```text
+Encoder-only
+Encoder-Decoder
+Decoder-only
+```
+
+## Objective
+
+回答： **让模型通过什么任务学习？**
+
+例如：
+
+```text
+Next-token prediction
+Masked-token prediction
+Span corruption
+Prefix-to-suffix prediction
+```
+
+## Loss Function
+
+回答：**如何数学地衡量模型预测错了多少？**
+
+例如：Cross-Entropy Loss
+
+所以：
+
+```text
+Architecture= 模型结构
+
+Objective= 训练任务
+
+Loss= 衡量错误的方法
+```
+
+---
+
+# 17. 整体知识链
+
+```text
+我们希望模型学语言、知识、代码
+        ↓
+这些抽象目标不能直接计算 gradient
+        ↓
+设计 measurable learning objective
+        ↓
+例如 next-token prediction
+        ↓
+模型输出 vocabulary distribution
+        ↓
+与正确 target token 比较
+        ↓
+Cross-Entropy Loss
+        ↓
+Backpropagation
+        ↓
+更新 parameters
+        ↓
+在大量数据上重复
+        ↓
+Base Model
+        ↓
+Post-Training
+        ↓
+更符合实际使用需求的模型
+```
+
+---
+
+# 18. 面试速答
+
+### What is pre-training?
+
+> **Pre-training is the first large-scale training stage where a model learns broad language, knowledge, and other patterns from massive datasets using objectives such as next-token prediction or denoising.**
+
+### What is post-training?
+
+> **Post-training further trains a pretrained base model on smaller, higher-quality or preference-oriented data to improve instruction following, helpfulness, alignment, safety, or task-specific behavior.**
+
+### Why can next-token prediction learn useful representations?
+
+> **Although the objective is simple, accurately predicting the next token across diverse data requires the model to capture grammar, semantics, world knowledge, context, and recurring reasoning and programming patterns.**
+
+### What is span corruption?
+
+> **Span corruption removes spans from the input and asks an encoder-decoder model to reconstruct the missing text. The encoder processes the corrupted context, while the decoder autoregressively generates the missing spans.**
+
+### Prefix Prediction vs Span Corruption?
+
+> **Prefix prediction encodes the beginning of a sequence and generates its continuation, while span corruption removes pieces throughout the sequence and reconstructs them using surrounding context.**
+
+# 19. 一句话总结
+
+> **Pre-training uses a scalable prediction objective on massive data to learn broad capabilities; post-training shapes the pretrained model toward desired behavior. For encoder-decoder models, prefix-to-suffix prediction and span corruption construct different input-target pairs, but both can train the decoder using the same token-level cross-entropy loss.**
